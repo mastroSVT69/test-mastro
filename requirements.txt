@@ -1,0 +1,5 @@
+Flask
+requests
+# openpyxl not required since parsing done manually
+# MSAL for Azure AD auth (client-side JS, but server needs to validate tokens)
+# Install separately if needed: pip install msal

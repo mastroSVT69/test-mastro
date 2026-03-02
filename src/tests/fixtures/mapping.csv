@@ -1,0 +1,3 @@
+path,level,permissions
+C:\\Data\\ProjetA,1,Domain\\Users:Read
+C:\\Data\\ProjetA\\SousDossier,2,Domain\\Admins:FullControl

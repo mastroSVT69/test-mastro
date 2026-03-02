@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <title>Migration SharePoint/Teams</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
+      .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 5px; box-shadow: 0 0 10px #ccc; }
+      .auth-section { background: #e8f4f8; padding: 15px; margin-bottom: 20px; border-radius: 5px; border-left: 4px solid #0078d4; }
+      .user-info { color: #666; font-size: 0.9em; margin-top: 10px; }
+      button { padding: 10px 20px; margin: 5px 0 5px 5px; cursor: pointer; background: #0078d4; color: white; border: none; border-radius: 3px; }
+      button:hover { background: #106ebe; }
+      button:disabled { background: #ccc; cursor: not-allowed; }
+      select { padding: 8px; margin: 5px 0; border-radius: 3px; border: 1px solid #ddd; }
+      #preview { margin-top: 20px; background: #f0f0f0; padding: 10px; border-radius: 3px; }
+      table { border-collapse: collapse; margin-top: 10px; width: 100%; }
+      table th, table td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+      table th { background: #f0f0f0; }
+      h2 { color: #333; border-bottom: 2px solid #0078d4; padding-bottom: 10px; }
+      .error { color: #d32f2f; background: #ffebee; padding: 10px; border-radius: 3px; margin: 10px 0; }
+      .success { color: #388e3c; background: #e8f5e9; padding: 10px; border-radius: 3px; margin: 10px 0; }
+      label { display: block; margin-top: 10px; font-weight: bold; }
+      .info-box { background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 3px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+<div class="container">
+  <h1>🚀 Migration SharePoint/Teams</h1>
+
+  <!-- [1] Authentication -->
+  <div class="auth-section">
+    <h3>🔐 Authentification Microsoft</h3>
+    <p>Connectez-vous avec votre compte Microsoft pour accéder à vos équipes Teams et canaux.</p>
+    <button id="loginBtn" onclick="loginWithMS()">Se connecter avec Microsoft</button>
+    <button id="logoutBtn" onclick="logoutFromMS()" style="display:none;">📴 Déconnexion</button>
+    <div class="user-info" id="userInfo"></div>
+  </div>
+
+  <!-- [2] File upload -->
+  <div class="file-section">
+    <h2>📁 Charger un fichier de mapping</h2>
+    <p>Sélectionnez un fichier Excel (.xlsx) contenant la cartographie des dossiers à migrer.</p>
+    <form action="/upload" method="post" enctype="multipart/form-data">
+        <label for="mapping">Fichier Excel :</label>
+        <input type="file" name="mapping" id="mapping" accept=".xlsx" />
+        <button type="submit">Charger le fichier</button>
+    </form>
+    
+    <div id="preview"></div>
+  </div>
+
+  <!-- [3] Teams/Channels (visible after login) -->
+  <div id="teamsSection" style="display:none;">
+    <h2>🎯 Destination Teams</h2>
+    <p>Sélectionnez l'équipe et le canal où migrer vos dossiers.</p>
+    
+    <label for="team">Équipe :</label>
+    <select id="team" name="team">
+      <option value="">-- Sélectionner une équipe --</option>
+    </select>
+
+    <label for="channel">Canal :</label>
+    <select id="channel" name="channel">
+      <option value="">-- Sélectionner un canal --</option>
+    </select>
+
+    <div id="teamAdvice" style="margin-top:15px; padding: 10px; background: #f0f0f0; border-radius: 3px; color: #555; display: none;"></div>
+  </div>
+
+  <!-- [4] File data preview -->
+  {% if rows %}
+    <div class="data-section">
+      <h2>📊 Données du fichier</h2>
+      <table>
+        <thead>
+          <tr>
+          {% for key in rows[0].keys() %}
+            <th>{{ key }}</th>
+          {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+          <tr>
+          {% for val in row.values() %}
+            <td>{{ val }}</td>
+          {% endfor %}
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  <!-- [5] Advice -->
+  {% if advice %}
+    <div class="advice-section">
+      <h2>💡 Conseils</h2>
+      <pre style="background: #fafafa; padding: 10px; border-radius: 3px; overflow-x: auto;">{{ advice }}</pre>
+    </div>
+  {% endif %}
+
+  <!-- [6] Messages -->
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <div class="messages">
+      {% for message in messages %}
+        <p class="success">✓ {{ message }}</p>
+      {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <div id="errorBox"></div>
+
+</div><!-- /container -->
+
+<!-- SheetJS for Excel preview -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
+<!-- MSAL for Azure AD auth -->
+<script src="https://alcdn.msftauth.net/lib/1.4.17/js/msal.min.js"></script>
+
+<script>
+// ========== MSAL Configuration ==========
+// TODO: Replace "YOUR_CLIENT_ID_HERE" with your actual Azure AD client ID
+const msalConfig = {
+    auth: {
+        clientId: "{{ client_id | default('1e128539-1ae4-4592-8669-41718212dca1') }}",
+        authority: "https://login.microsoftonline.com/common",
+        redirectUri: window.location.origin + window.location.pathname,
+        responseType: "id_token token",
+        responseMode: "fragment"
+    },
+    cache: { cacheLocation: "sessionStorage", storeAuthStateInCookie: false }
+};
+
+const loginRequest = { 
+    scopes: ["user.read", "team.read.all", "channel.read.all"] 
+};
+
+let msalApp;
+let userAccount = null;
+let accessToken = null;
+
+// Initialize on page load
+window.addEventListener('load', () => {
+    try {
+        msalApp = new Msal.UserAgentApplication(msalConfig);
+        
+        // Handle redirect
+        if (msalApp.isCallback(window.location.hash)) {
+            msalApp.handleRedirectCallback((error, response) => {
+                if (error) {
+                    console.error("Redirect error:", error);
+                    showError("Erreur d'authentification: " + error.errorCode);
+                } else {
+                    userAccount = response.account;
+                    updateAuthUI();
+                }
+            });
+        } else {
+            // Check if already signed in
+            userAccount = msalApp.getAccount();
+            if (userAccount) {
+                updateAuthUI();
+            }
+        }
+    } catch (err) {
+        console.warn("MSAL init (this is ok if client ID is not set):", err.message);
+        showError("Conseil: Configurez votre Azure AD Client ID dans AZURE_AD_CONFIG.md");
+    }
+});
+
+function showError(msg) {
+    document.getElementById('errorBox').innerHTML = '<div class="error">' + msg + '</div>';
+}
+
+function loginWithMS() {
+    if (!msalApp) {
+        showError("MSAL non initialisé. Vérifiez votre configuration Azure AD.");
+        return;
+    }
+    if (msalConfig.auth.clientId === "YOUR_CLIENT_ID_HERE") {
+        showError("❌ Client ID non configuré. Consultez AZURE_AD_CONFIG.md");
+        return;
+    }
+    msalApp.loginPopup(loginRequest)
+        .then(() => {
+            userAccount = msalApp.getAccount();
+            updateAuthUI();
+        })
+        .catch(err => {
+            console.error("Login error:", err);
+            showError("Erreur de connexion: " + (err.errorCode || err.message));
+        });
+}
+
+function logoutFromMS() {
+    if (msalApp) msalApp.logout();
+    userAccount = null;
+    accessToken = null;
+    updateAuthUI();
+}
+
+function updateAuthUI() {
+    const loginBtn = document.getElementById('loginBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const userInfo = document.getElementById('userInfo');
+    const teamsSection = document.getElementById('teamsSection');
+    
+    if (userAccount) {
+        loginBtn.style.display = 'none';
+        logoutBtn.style.display = 'inline';
+        userInfo.innerHTML = `<strong>✓ Connecté :</strong> ${userAccount.name} (${userAccount.userName})`;
+        teamsSection.style.display = 'block';
+        document.getElementById('errorBox').innerHTML = '';
+        fetchTeamsFromGraph();
+    } else {
+        loginBtn.style.display = 'inline';
+        logoutBtn.style.display = 'none';
+        userInfo.innerHTML = '';
+        teamsSection.style.display = 'none';
+    }
+}
+
+function fetchTeamsFromGraph() {
+    if (!msalApp || !userAccount) return;
+    
+    msalApp.acquireTokenSilent(loginRequest)
+        .then(response => {
+            accessToken = response.accessToken;
+            
+            fetch('/api/teams?token=' + encodeURIComponent(accessToken))
+                .then(r => r.json())
+                .then(data => {
+                    const teamSelect = document.getElementById('team');
+                    teamSelect.innerHTML = '<option value="">-- Sélectionner une équipe --</option>';
+                    
+                    if (data.value && data.value.length > 0) {
+                        data.value.forEach(team => {
+                            const opt = document.createElement('option');
+                            opt.value = team.id;
+                            opt.textContent = team.displayName;
+                            teamSelect.appendChild(opt);
+                        });
+                    } else if (data.error) {
+                        console.error("Graph error:", data.error);
+                        loadDummyTeams();
+                        showError("⚠️ Impossible de récupérer les équipes: " + data.error);
+                    } else {
+                        loadDummyTeams();
+                    }
+                })
+                .catch(err => {
+                    console.error("Fetch teams:", err);
+                    loadDummyTeams();
+                });
+        })
+        .catch(err => {
+            console.log("Token error, loading demo teams:", err.message);
+            loadDummyTeams();
+        });
+}
+
+function loadDummyTeams() {
+    const teamSelect = document.getElementById('team');
+    teamSelect.innerHTML = '<option value="">-- Mode démo: équipes factices --</option>';
+    ['Equipe A', 'Equipe B'].forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        teamSelect.appendChild(opt);
+    });
+}
+
+// ========== File Preview (SheetJS) ==========
+const fileInput = document.getElementById('mapping');
+const previewDiv = document.getElementById('preview');
+
+fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) {
+        previewDiv.innerHTML = '';
+        return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = function(evt) {
+        try {
+            const workbook = XLSX.read(evt.target.result, { type: 'array' });
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+            const html = XLSX.utils.sheet_to_html(firstSheet);
+            previewDiv.innerHTML = '<h3>📋 Aperçu du fichier</h3>' + html;
+        } catch(err) {
+            previewDiv.innerHTML = '<div class="error">Erreur lors de la lecture: ' + err + '</div>';
+        }
+    };
+    reader.readAsArrayBuffer(file);
+});
+
+// ========== Team/Channel Selection ==========
+const teamSelect = document.getElementById('team');
+const channelSelect = document.getElementById('channel');
+const adviceBox = document.getElementById('teamAdvice');
+
+teamSelect.addEventListener('change', async function() {
+    const teamId = this.value;
+    if (!teamId) {
+        channelSelect.innerHTML = '<option value="">-- Sélectionner un canal --</option>';
+        adviceBox.style.display = 'none';
+        return;
+    }
+    
+    try {
+        let url = '/channels?team_id=' + encodeURIComponent(teamId);
+        if (accessToken) {
+            url += '&token=' + encodeURIComponent(accessToken);
+        }
+        
+        const resp = await fetch(url);
+        const channels = await resp.json();
+        
+        channelSelect.innerHTML = '<option value="">-- Sélectionner un canal --</option>';
+        if (Array.isArray(channels)) {
+            channels.forEach(c => {
+                const o = document.createElement('option');
+                o.text = c;
+                o.value = c;
+                channelSelect.appendChild(o);
+            });
+            adviceBox.style.display = 'block';
+            if (channels.length > 0) {
+                adviceBox.textContent = '✓ Canaux existants: ' + channels.join(', ') + '. Vous pouvez en sélectionner un ou en créer un nouveau.';
+            } else {
+                adviceBox.textContent = '⚠️ Aucun canal existant dans cette équipe. Un nouveau sera créé.';
+            }
+        } else if (channels.error) {
+            adviceBox.style.display = 'block';
+            adviceBox.textContent = '❌ Erreur: ' + channels.error;
+        }
+    } catch (err) {
+        adviceBox.style.display = 'block';
+        adviceBox.textContent = '❌ Erreur: ' + err;
+    }
+});
+</script>
+
+</body>
+</html>
