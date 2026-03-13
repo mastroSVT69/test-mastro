@@ -70,7 +70,7 @@
   <!-- [4] File data preview -->
   {% if rows %}
     <div class="data-section">
-      <h2>📊 Données du fichier</h2>
+      <h2>📊 Données du fichier (aperçu)</h2>
       <table>
         <thead>
           <tr>
@@ -80,7 +80,7 @@
           </tr>
         </thead>
         <tbody>
-        {% for row in rows %}
+        {% for row in rows[:5] %}
           <tr>
           {% for val in row.values() %}
             <td>{{ val }}</td>
@@ -89,6 +89,9 @@
         {% endfor %}
         </tbody>
       </table>
+      {% if rows|length > 5 %}
+        <p style="color: #666; font-size: 0.9em; margin-top: 10px;">📝 Affichage des 5 premières lignes sur {{ rows|length }} au total</p>
+      {% endif %}
     </div>
   {% endif %}
 
